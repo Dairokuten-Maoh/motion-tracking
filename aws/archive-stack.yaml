@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Jarvis private raw-audio archive with capture-time retention. No public access.
+Resources:
+  RawAudioBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: JarvisRawUploadAgeBackstop
+            Status: Enabled
+            Prefix: jarvis/raw/
+            ExpirationInDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+  TransportPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref RawAudioBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt RawAudioBucket.Arn
+              - !Sub '${RawAudioBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+  CleanupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ExpireJarvisRawAudio
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt RawAudioBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: jarvis/raw/*
+              - Effect: Allow
+                Action: s3:DeleteObject
+                Resource: !Sub '${RawAudioBucket.Arn}/jarvis/raw/*'
+  ExpireRecordings:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CleanupRole.Arn
+      MemorySize: 128
+      Timeout: 300
+      Environment:
+        Variables:
+          BUCKET: !Ref RawAudioBucket
+      Code:
+        ZipFile: |
+          import os, re, time
+          import boto3
+          PATTERN = re.compile(r'^jarvis/raw/(\d{13})_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.wav$')
+          def handler(event, context):
+              client = boto3.client('s3')
+              bucket = os.environ['BUCKET']
+              cutoff = int((time.time() - 30 * 86400) * 1000)
+              deleted = 0
+              for page in client.get_paginator('list_objects_v2').paginate(Bucket=bucket, Prefix='jarvis/raw/'):
+                  expired = []
+                  for obj in page.get('Contents', []):
+                      match = PATTERN.fullmatch(obj['Key'])
+                      if match and int(match.group(1)) <= cutoff:
+                          expired.append({'Key': obj['Key']})
+                  if expired:
+                      result = client.delete_objects(Bucket=bucket, Delete={'Objects': expired, 'Quiet': True})
+                      if result.get('Errors'):
+                          raise RuntimeError('Some expired recordings could not be deleted')
+                      deleted += len(expired)
+              return {'deleted': deleted}
+  CleanupSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: rate(1 hour)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ExpireRecordings.Arn
+          Id: ExpireJarvisRecordings
+  AllowScheduledCleanup:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ExpireRecordings
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CleanupSchedule.Arn
+  JarvisClientPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Attach to the existing AWS role used by Jarvis on the PC. No IAM user or access key is created.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetBucketVersioning
+              - s3:GetBucketPublicAccessBlock
+              - s3:GetLifecycleConfiguration
+            Resource: !GetAtt RawAudioBucket.Arn
+          - Effect: Allow
+            Action: s3:ListBucket
+            Resource: !GetAtt RawAudioBucket.Arn
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource: !Sub '${RawAudioBucket.Arn}/jarvis/raw/*'
+Outputs:
+  BucketName:
+    Value: !Ref RawAudioBucket
+  Region:
+    Value: !Ref AWS::Region
+  ClientPolicyArn:
+    Value: !Ref JarvisClientPolicy
+  CleanupFunction:
+    Value: !Ref ExpireRecordings

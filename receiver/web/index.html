@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Jarvis · Daily history</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<aside><div class="brand"><span class="orb">J</span> JARVIS</div><p class="eyebrow">YOUR PERSONAL ARCHIVE</p><div class="nav active">◷ &nbsp; Daily history</div><div class="aside-bottom"><span class="dot"></span> Local processing<p>Raw audio · 30 days<br>Transcripts & memories · retained</p><button id="lock" class="secondary" hidden>Lock history</button></div></aside>
+<main>
+<header><div><p class="eyebrow">A RECORD OF YOUR DAY</p><h1>Daily history</h1><p class="subtle">Quietly collected. Ready when you need it.</p></div><span class="badge">TAIPEI · UTC+08:00</span></header>
+<section id="pair" class="panel"><h2>Unlock your history</h2><p>Your pairing token keeps recordings and transcripts private.</p><form id="login"><label for="token">Pairing token</label><div class="pair-row"><input id="token" type="password" autocomplete="off" required placeholder="Paste the token from jarvis-data/token.txt"><button>Unlock</button></div></form><p class="subtle">The token stays in this tab’s memory and clears when you close or reload it.</p></section>
+<section id="workspace" hidden>
+<form id="filters" class="toolbar"><div><label for="day">Date</label><input type="date" id="day" required></div><div class="search"><label for="query">Search this day</label><input id="query" type="search" placeholder="A phrase, a topic, a moment…"></div><button>Search</button><button type="button" id="refresh" class="secondary">Refresh</button></form>
+<section class="panel ask-panel" aria-labelledby="ask-title"><div class="section-heading"><h2 id="ask-title">Ask Jarvis</h2><span class="badge">LOCAL AI</span></div><p class="subtle">Ask about the selected date. Answers use your transcripts; they do not identify speakers or perform actions.</p><form id="ask-form"><label for="question">Your question</label><div class="pair-row"><input id="question" maxlength="1000" required placeholder="What was recorded today?"><button id="ask-button">Ask Jarvis</button></div></form><p id="ask-status" class="subtle" role="status" aria-live="polite"></p><div id="answer" hidden><p id="answer-scope" class="subtle"></p><p id="answer-text"></p><div id="answer-sources"></div><div class="voice-controls"><button id="speak-answer" class="secondary" type="button">Read aloud</button><button id="stop-speaking" class="secondary" type="button">Stop speaking</button></div></div></section>
+<div class="stats"><div><strong id="clips-count">0</strong><span>recordings</span></div><div><strong id="entries-count">0</strong><span>half-hour entries</span></div><div><strong id="pending-count">0</strong><span>awaiting transcription</span></div></div>
+<div class="section-heading"><h2>Your timeline</h2><span class="subtle">Oldest to newest · refresh to update</span></div>
+<p class="notice">Summaries describe recorded audio. Speakers are not identified; background media and other people’s words are not automatically your activities or commitments.</p>
+<div id="timeline"></div>
+</section>
+<p id="message" role="status" aria-live="polite"></p>
+</main>
+</body></html>

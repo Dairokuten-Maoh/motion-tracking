@@ -1,0 +1,5 @@
+{
+  "bucket": "YOUR-STACK-OUTPUT-BUCKET-NAME",
+  "region": "YOUR-AWS-REGION",
+  "profile": "jarvis"
+}
