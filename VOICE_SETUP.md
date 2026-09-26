@@ -1,5 +1,11 @@
 # Local Jarvis speech
 
+Current local status (2026-09-26): custom speech is temporarily disabled after
+the user reported distortion during phone testing. Android TTS is the fallback.
+The private `enabled` marker was moved to `enabled-quality-hold`; restore it only
+after listening acceptance. Correct transcripts and valid WAV files do not prove
+that a synthetic voice sounds good.
+
 The custom voice uses [FuturePresentLabs/tts-jarvis](https://huggingface.co/FuturePresentLabs/tts-jarvis)
 with VoxCPM2 and a local reference recording. It is synthesized speech, not an
 official movie voice. Similarity depends on the reference and needs listening
