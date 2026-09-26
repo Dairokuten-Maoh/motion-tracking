@@ -11,6 +11,13 @@ from test_dialogue import intent
 
 
 class BridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.slot = tempfile.TemporaryDirectory()
+        self.addCleanup(self.slot.cleanup)
+        root = patch('gpu_slot.ROOT', Path(self.slot.name))
+        root.start()
+        self.addCleanup(root.stop)
+
     def test_validated_proposal_and_metrics_cross_process_boundary(self):
         output={'intent':intent('chat',reply='Hello.'),'metrics':{'calls':1,'prompt_tokens':20,'completion_tokens':3}}
         with patch('openjarvis_bridge.subprocess.run',return_value=subprocess.CompletedProcess([],0,json.dumps(output),'')) as run:

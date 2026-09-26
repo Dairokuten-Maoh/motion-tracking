@@ -6,12 +6,13 @@ files, deleted after delivery or failure. Rendering has no action/tool capabilit
 import hashlib
 import io
 import json
+import re
 from pathlib import Path
 import tempfile
 import threading
 import urllib.request
 import wave
-from gpu_slot import inference_slot
+from gpu_slot import inference_slot, interactive_activity
 from voice_process import WORKER
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +20,34 @@ LOCK = threading.Lock()
 CANNED = {"I'm listening.", "Okay. I'll wait for Hey Jarvis.",
           "I didn't hear a question. Please try again."}
 MAX_WAV = 16_000_000
+
+
+def synthesize_stream(text, data):
+    """Yield complete sentence WAVs; closing the iterator releases priority.
+
+    A completed chunk can play while the next renders. The caller must signal
+    successful end explicitly; a truncated connection is not successful speech.
+    """
+    if not isinstance(text,str) or not 1 <= len(text.strip()) <= 1200:
+        raise ValueError('Speech text must contain 1 to 1200 characters')
+    pieces=[]
+    for sentence in re.split(r'(?<=[.!?])\s+|(?<=[。！？])',text.strip()):
+        while len(sentence)>240:
+            cut=sentence.rfind(' ',0,241)
+            if cut<1:cut=240
+            pieces.append(sentence[:cut])
+            sentence=sentence[cut:].strip()
+        if sentence:
+            if pieces and len(pieces[-1])<12 and len(pieces[-1])+len(sentence)<239:
+                pieces[-1]+=' '+sentence
+            else:pieces.append(sentence)
+    total=0
+    with interactive_activity():
+        for piece in pieces:
+            body=synthesize(piece,data)
+            total+=len(body)
+            if total>MAX_WAV:raise RuntimeError('Speech stream is too large')
+            yield body
 
 
 def checked_wav(body):

@@ -4,12 +4,14 @@ from contextlib import contextmanager
 import hashlib
 import hmac
 import io
+import itertools
 import json
 import os
 from pathlib import Path
 import re
 import secrets
 import sqlite3
+import struct
 import threading
 import time
 import wave
@@ -228,7 +230,7 @@ def handler_for(archive, token):
             if not self.authorized():
                 return
             try:
-                if self.path == '/speak':
+                if self.path in ('/speak','/speak-stream'):
                     length = int(self.headers.get('Content-Length', '0'))
                     if not 0 < length <= 8192:
                         raise ValueError('Invalid speech request size')
@@ -236,7 +238,34 @@ def handler_for(archive, token):
                     if len(body) != length: raise ValueError('Incomplete speech request')
                     payload = json.loads(body)
                     if not isinstance(payload, dict): raise ValueError('Expected speech text')
-                    from voice_output import synthesize
+                    from voice_output import synthesize, synthesize_stream
+                    if self.path == '/speak-stream':
+                        stream=synthesize_stream(payload.get('text'),archive.root)
+                        try:
+                            first=next(stream)
+                        except (OSError,RuntimeError,wave.Error):
+                            stream.close()
+                            self.reply(503, {'error':'Custom voice is unavailable; use phone speech.'})
+                            return
+                        self.close_connection=True
+                        try:
+                            self.connection.settimeout(30)
+                            self.send_response(200)
+                            self.send_header('Content-Type','application/x-jarvis-wav-stream')
+                            self.send_header('Cache-Control','no-store')
+                            self.send_header('Connection','close')
+                            self.end_headers()
+                            for audio in itertools.chain([first],stream):
+                                self.wfile.write(struct.pack('!I',len(audio))+audio)
+                                self.wfile.flush()
+                            self.wfile.write(b'\0\0\0\0')
+                            self.wfile.flush()
+                        except (OSError,RuntimeError,wave.Error):
+                            # No terminal frame: the phone reports interruption and
+                            # never repeats a partially spoken reply or action.
+                            pass
+                        finally:stream.close()
+                        return
                     try:
                         audio = synthesize(payload.get('text'), archive.root)
                         self.send_bytes(200, audio, 'audio/wav')
@@ -246,12 +275,14 @@ def handler_for(archive, token):
                 if self.path == '/transcribe-command':
                     from command_speech import transcribe, MAX_PCM, SpeechBusy
                     length = int(self.headers.get('Content-Length', '0'))
-                    if self.headers.get('Content-Type') != 'audio/pcm;rate=16000;channels=1;format=s16le':
-                        raise ValueError('Unsupported command audio format')
                     if not 3200 <= length <= MAX_PCM or length % 2:
                         raise ValueError('Invalid command audio length')
                     body = self.rfile.read(length)
                     if len(body) != length: raise ValueError('Incomplete command audio')
+                    # Consume a bounded body before rejecting its media type;
+                    # closing with unread bytes can reset the connection on Windows.
+                    if self.headers.get('Content-Type') != 'audio/pcm;rate=16000;channels=1;format=s16le':
+                        raise ValueError('Unsupported command audio format')
                     try:
                         self.reply(200, {'text': transcribe(body), 'engine': 'whisper-small-local'})
                     except SpeechBusy as exc:

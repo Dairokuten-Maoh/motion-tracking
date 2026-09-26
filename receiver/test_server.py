@@ -1,5 +1,6 @@
 import io
 import json
+import struct
 from pathlib import Path
 import tempfile
 import threading
@@ -23,6 +24,40 @@ def audio():
 
 
 class ReceiverTests(unittest.TestCase):
+    def test_stream_delivers_frame_before_second_render_and_requires_completion(self):
+        release=threading.Event()
+        closed=threading.Event()
+        def chunks(*args):
+            try:
+                yield audio()
+                if not release.wait(5):raise RuntimeError('Client never received first chunk')
+                yield audio()
+            finally:closed.set()
+        request=urllib.request.Request(self.url+'/speak-stream',data=b'{"text":"Hello. Another sentence."}',
+            headers={'Authorization':'Bearer test-token','Content-Type':'application/json'})
+        with patch('voice_output.synthesize_stream',side_effect=chunks):
+            with urllib.request.urlopen(request,timeout=5) as response:
+                size=struct.unpack('!I',response.read(4))[0]
+                self.assertEqual(response.read(size),audio())
+                self.assertFalse(release.is_set())
+                release.set()
+                self.assertEqual(response.read(),struct.pack('!I',len(audio()))+audio()+b'\0'*4)
+        self.assertTrue(closed.wait(1))
+        self.assertFalse(self.archive.search(''))
+
+    def test_stream_failure_has_no_success_marker_and_is_authenticated(self):
+        def broken(*args):
+            yield audio()
+            raise RuntimeError('Synthesis failed')
+        def request(token):
+            return urllib.request.Request(self.url+'/speak-stream',data=b'{"text":"Hello."}',
+                headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+        with patch('voice_output.synthesize_stream',side_effect=broken) as generate:
+            with self.assertRaises(urllib.error.HTTPError):urllib.request.urlopen(request('wrong'))
+            generate.assert_not_called()
+            with urllib.request.urlopen(request('test-token')) as response:
+                self.assertEqual(response.read(),struct.pack('!I',len(audio()))+audio())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.archive = Archive(self.temp.name)

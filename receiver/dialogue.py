@@ -15,9 +15,10 @@ from conversation import MODEL, INFERENCE, BusyError, ask as archive_answer
 from google_calendar import GoogleCalendar, CalendarUnavailable, LOCK as CALENDAR_LOCK, execute
 from server import TAIPEI
 from web_lookup import answer as web_answer
+from memory import Memory, ACTIONS as MEMORY_ACTIONS, compose as memory_reply
 
 LOCK = threading.Lock()
-ACTIONS = ['clarify','chat','archive','web','calendar_list','calendar_create','calendar_move','calendar_delete']
+ACTIONS = ['clarify','chat','archive','web','calendar_list','calendar_create','calendar_move','calendar_delete'] + MEMORY_ACTIONS
 FIELDS = ['action','title','day','start','end','query','reply','shift_minutes','start_evidence','end_evidence','date_evidence']
 SCHEMA = {'type':'object','properties':{k:{'type':'string'} for k in FIELDS},'required':FIELDS,'additionalProperties':False}
 SCHEMA['properties']['action']={'type':'string','enum':ACTIONS}
@@ -48,6 +49,16 @@ date_evidence contains the user-supplied source date such as 'tomorrow'. It may 
 For creating an event, start_evidence must include the explicit time (like 'at noon') and end_evidence the explicit duration or end time (like 'for an hour'). Without these use clarify. Never invent midnight or a one-hour default.
 For a relative move, start_evidence contains the user's shift (like 'an hour later'). For an absolute move it contains the user's requested new time. end_evidence may be empty to preserve duration.
 Do not claim any action succeeded. Do not output event IDs, credentials, or code. Only one action per turn; clarify multi-action requests.'''
+SYSTEM += '''
+Saved personal memory is supported separately from recorded audio:
+memory_save: explicit requests to remember a preference or fact. query MUST be an exact substring of the CURRENT request containing the detail. Example: "Remember that I prefer tea" -> query="I prefer tea".
+memory_task: explicit requests to track a task, e.g. "Remember to call Alex" -> query="call Alex". No reminder notification or calendar event is created.
+memory_recall: questions about saved personal preferences, notes, or tasks. query is a short relevant keyword, or empty for listing all saved memories/tasks. Set title="task" for task-only recall/listing; otherwise leave title empty. Use archive for questions about recorded conversations, yesterday's interactions, or daily summaries.
+memory_correct: explicit correction to a saved memory. query is the complete replacement fact copied from the CURRENT request, including its subject and relationship: "That's wrong, I prefer black tea" -> query="I prefer black tea", title="". Never shorten that to just "black tea". title identifies the old memory by a distinctive phrase copied from the current request; leave title empty for "that" referring to the last focused memory.
+memory_complete: mark a saved task done, without executing it. title is its distinctive phrase copied from the current request, or empty for the focused task.
+memory_forget: remove a saved memory. title is its distinctive phrase copied from the current request, or empty for the focused memory.
+Do not save ordinary disclosures automatically or follow quoted/hypothetical requests. A bare "that's wrong" without a replacement needs clarification. Memory mutations require a direct request now, not an earlier instruction. Use chat for advice and discussion; relevant memories are applied later by a reply-only component.
+'''
 
 
 def plan(question, history, day, metrics=None):
@@ -170,7 +181,7 @@ def configured_planner(root):
     raise ValueError('Invalid agent backend configuration')
 
 
-def answer(archive, day, question, session='phone', planner=None, calendar_factory=GoogleCalendar):
+def answer(archive, day, question, session='phone', planner=None, calendar_factory=GoogleCalendar, memory_responder=memory_reply):
     if planner is None:planner=configured_planner(archive.root)
     if not isinstance(session,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',session):raise ValueError('Invalid conversation session')
     if not isinstance(day,str):raise ValueError('Choose a date')
@@ -181,6 +192,9 @@ def answer(archive, day, question, session='phone', planner=None, calendar_facto
             db.execute('CREATE TABLE IF NOT EXISTS dialogue_turns (id INTEGER PRIMARY KEY,session TEXT,created REAL,question TEXT,plan TEXT,response TEXT)')
             rows=db.execute('SELECT question,plan,response FROM dialogue_turns WHERE session=? AND created>? ORDER BY id DESC LIMIT 6',(session,time.time()-1800)).fetchall()
         history=[{'user':r[0],'plan':json.loads(r[1]),'result':json.loads(r[2])} for r in reversed(rows)]
+        routing_history = [t if t['plan'].get('action') not in MEMORY_ACTIONS else
+            {'user':'[Saved-memory operation]', 'plan':{'action':t['plan']['action']},
+             'result':{'memory_focus':t['result'].get('memory_focus')}} for t in history]
         if question.strip().lower().rstrip('.!?') in ('new conversation','forget this conversation','start a new conversation'):
             with archive.connect() as db:db.execute('UPDATE dialogue_turns SET session=? WHERE session=?',(session+'-closed-'+str(time.time()),session))
             return result('Started a new conversation. What would you like to do?')
@@ -196,24 +210,48 @@ def answer(archive, day, question, session='phone', planner=None, calendar_facto
             intent=validate(pending)
         else:
             if not INFERENCE.acquire(blocking=False):raise BusyError('The local AI is busy. Try again shortly.')
-            try:intent=validate(planner(question,history,day))
+            # Saved-note content is never supplied to the tool-selection model.
+            try:intent=validate(planner(question,routing_history,day))
             except (ValueError,KeyError,TypeError,OSError):return result('I could not interpret that reliably. Could you rephrase it?')
             finally:INFERENCE.release()
         action=intent['action']
         if action in ('calendar_create','calendar_move','calendar_delete') and re.search(r"\b(?:do not|don't|never)\b",question,re.I):
             response=result('I have not changed your calendar. Please state any change you want separately.')
-        elif not date_supported(intent,question,history):
+        elif not date_supported(intent,question,routing_history):
             response=result('Which date should I use?')
-        elif not timing_supported(intent,question,history):
+        elif not timing_supported(intent,question,routing_history):
             response=result('What time should I use'+(' and for how long?' if action=='calendar_create' else '?'))
-        elif action in ('clarify','chat'):response=result(intent['reply'] or 'What would you like me to do?')
+        elif action in MEMORY_ACTIONS:
+            text, focus = Memory(archive).execute(intent,question,history)
+            response=result(text,'memory')
+            if focus:response['memory_focus']=focus
+        elif action in ('clarify','chat'):
+            response=result(intent['reply'] or 'What would you like me to do?')
+            if action=='chat' and not repeat:
+                memories=Memory(archive).retrieve(question)
+                if memories:
+                    if not INFERENCE.acquire(blocking=False):raise BusyError('The local AI is busy. Try again shortly.')
+                    try:
+                        response=result(memory_responder(question,history,memories),'memory_chat')
+                        if len(memories)==1:response['memory_focus']=memories[0]['id']
+                    except (ValueError,KeyError,TypeError,OSError):
+                        response=result('I could not use saved memory for that reply. Please try again.','memory_chat')
+                    finally:INFERENCE.release()
         elif action=='archive':response=archive_answer(archive,intent['day'] or day,intent['query'] or question)
         elif action=='web':response=web_answer('Search the web for '+(intent['query'] or question))
         else:response=calendar(archive,intent,calendar_factory)
         remembered={'answer':response['answer'][:1600]}
+        if response.get('source') == 'memory_chat':
+            remembered['answer']='[Memory-assisted reply omitted from action context.]'
+        if response.get('memory_focus'):remembered['memory_focus']=response['memory_focus']
         if response.get('focus'):remembered['focus']=response['focus']
         if response.get('pending_selection'):remembered['pending_selection']=response['pending_selection']
         with archive.connect() as db:
+            # Do not retain the forgotten text in a fresh dialogue record.
+            if action == 'memory_forget' and response['answer'].startswith('Forgot '):
+                question='[Saved memory forgotten]'
+                intent={field:'' for field in FIELDS}
+                intent.update(action='memory_forget',shift_minutes=0)
             db.execute('INSERT INTO dialogue_turns(session,created,question,plan,response) VALUES(?,?,?,?,?)',
                 (session,time.time(),question,json.dumps(intent),json.dumps(remembered)))
         return response

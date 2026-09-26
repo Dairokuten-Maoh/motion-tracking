@@ -45,8 +45,8 @@ On this PC, an uncached short reply improved from 27.2 seconds to 5.2 seconds
 with a warm worker; a two-sentence reply improved from 34.0 to 11.0 seconds.
 The first reply after a receiver restart still took 26.7 seconds. These are local
 speech-rendering measurements, excluding recognition, conversation generation,
-network transfer and contention for the GPU. Playback still waits for the full
-WAV; streaming audio is not implemented. Both benchmark texts were recovered
+network transfer and contention for the GPU. These measurements predate sentence
+streaming in phone 0.7. Both benchmark texts were recovered
 exactly by local Whisper, and synthesis worked after an interleaved Ollama call.
 
 Only fixed interface phrases such as "I'm listening." are cached on the PC.
@@ -61,3 +61,30 @@ retries the preceding action. Long replies over 1200 characters use fallback.
 Generation uses six steps, guidance 2.4, seed 42, and no optional Forward audio
 effects or text normalization. Names, numbers, long text and Mandarin require
 further listening checks; this English adapter is not validated for Mandarin.
+
+## Sentence streaming and interactive priority (phone 0.7)
+
+The phone uses authenticated `/speak-stream`: each frame has a four-byte
+big-endian WAV byte length and a complete PCM WAV. A zero-length frame marks
+successful completion. A missing terminal frame means interruption. The server
+renders bounded sentences in order; the phone plays each as it arrives while
+later sentences can render. This is sentence streaming, not token-by-token audio.
+Cold model loading and first-sentence synthesis still happen before playback.
+The original `/speak` endpoint remains compatible with older phones.
+
+Streams are bounded to 16 MB in total. A failure before playback can use Android
+TTS. After playback starts, interruption is reported without replaying the reply
+or the action. Request/playback IO failures return to wake listening. Playback
+continues to suspend microphone recognition, while archival capture is unchanged.
+
+Interactive model requests and speech streams reserve priority across processes.
+Diary processing defers while a reservation exists and for 30 seconds afterward,
+giving command capture and follow-ups time to proceed. A crashed reservation
+expires after ten minutes. Already-running inference is not forcibly preempted:
+one background batch can still delay a request, especially on a busy GPU.
+
+Diary batches now contain at most 1,200 transcript characters and request at most
+450 generated tokens. Validated intermediate results are cached for seven days,
+so yielding to a conversation does not discard completed batches. Failed unchanged
+snapshots retry after 5, 10, 20, 40, then 60 minutes; changed transcripts can retry
+immediately. Deferral for interactive work is not recorded as a summary failure.

@@ -93,6 +93,7 @@ final class VoiceLoop implements AutoCloseable {
                 listening();
                 boolean conversationActive = false;
                 while (!closed) {
+                    try {
                     byte[] block;
                     boolean complete;
                     String words;
@@ -175,11 +176,17 @@ final class VoiceLoop implements AutoCloseable {
                         }
                         catch (IOException e) {
                             prefs.edit().putString("last_voice_error", e.getMessage()).apply();
-                            speak("I couldn't complete the reply. Check the last error in the Jarvis app.");
                             conversationActive = false;
                         }
                     }
                     if (!conversationActive) { wake.reset(); listening(); }
+                    } catch (IOException e) {
+                        // A failed acknowledgement or playback must not kill wake
+                        // listening. Never retry an action because its reply failed.
+                        prefs.edit().putString("last_voice_error", e.getMessage()).apply();
+                        conversationActive = false;
+                        wake.reset(); listening();
+                    }
                 }
             }
         } catch (InterruptedException e) {
@@ -264,6 +271,9 @@ final class VoiceLoop implements AutoCloseable {
             speakRemote(text);
             prefs.edit().putString("speech_engine", "Jarvis custom voice").apply();
             return;
+        } catch (PartialSpeechException e) {
+            prefs.edit().putString("speech_engine", "Custom speech interrupted; reply not replayed").apply();
+            throw e;
         } catch (IOException e) {
             if (closed) return;
             prefs.edit().putString("speech_engine", "Android fallback: " + e.getMessage()).apply();
@@ -284,7 +294,39 @@ final class VoiceLoop implements AutoCloseable {
         byte[] body;
         try { body = new JSONObject().put("text", text).toString().getBytes(StandardCharsets.UTF_8); }
         catch (org.json.JSONException e) { throw new IOException("Invalid speech text", e); }
-        byte[] wav = requestBytes("/speak", body, "application/json", 185000, 16000000);
+        HttpURLConnection request = (HttpURLConnection) new URL(prefs.getString("endpoint", "") + "/speak-stream").openConnection();
+        connection = request;
+        boolean playbackStarted = false;
+        try {
+            if (closed) return;
+            request.setConnectTimeout(10000); request.setReadTimeout(185000);
+            request.setInstanceFollowRedirects(false); request.setRequestMethod("POST"); request.setDoOutput(true);
+            request.setRequestProperty("Authorization", "Bearer " + prefs.getString("token", ""));
+            request.setRequestProperty("Content-Type", "application/json");
+            request.setFixedLengthStreamingMode(body.length);
+            try (OutputStream output = request.getOutputStream()) { output.write(body); }
+            if (request.getResponseCode() != 200) throw new IOException("PC returned HTTP " + request.getResponseCode());
+            if (!"application/x-jarvis-wav-stream".equals(request.getContentType()))
+                throw new IOException("Invalid speech stream");
+            try (InputStream input = request.getInputStream()) {
+                SpeechFrames frames = new SpeechFrames(input);
+                byte[] wav;
+                while (!closed && (wav = frames.next()) != null) {
+                    playbackStarted = true;
+                    playWav(wav);
+                }
+            }
+        } catch (IOException e) {
+            if (playbackStarted) throw new PartialSpeechException(e);
+            throw e;
+        } finally { request.disconnect(); connection = null; }
+    }
+
+    private static final class PartialSpeechException extends IOException {
+        PartialSpeechException(IOException cause) { super("Speech interrupted; request was not repeated", cause); }
+    }
+
+    private void playWav(byte[] wav) throws IOException, InterruptedException {
         if (closed) return;
         File file = File.createTempFile("jarvis-speech-", ".wav", context.getCacheDir());
         CountDownLatch pending = new CountDownLatch(1);

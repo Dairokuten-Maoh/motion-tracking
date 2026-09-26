@@ -1,5 +1,10 @@
 # Jarvis capture prototype
 
+Personal notes and tasks now persist across conversations. Try “Remember that I
+prefer oolong tea,” “What tea do I prefer?”, or “Remember to call the bicycle shop.”
+You can correct, finish, and forget saved items. See [personal memory](MEMORY.md)
+for examples, retrieval bounds, and the distinction from the recording archive.
+
 First milestone: Pixel microphone → durable PC audio archive → local English/Mandarin transcription.
 Your existing `import cv2.py` is unchanged. No recording starts until you tap **Start listening**.
 
@@ -203,7 +208,7 @@ Expect a few additional seconds before the answer. A synthetic English calendar 
 
 ## Custom Jarvis voice (phone 0.6)
 
-Phone replies use the local VoxCPM2 Jarvis adapter and supplied reference recording through the authenticated PC speech endpoint. A persistent worker now keeps the model in system RAM between replies. Local tests measured 5.2 seconds for a warm short reply and 11.0 seconds for a warm two-sentence reply, down from 27.2 and 34.0 seconds. The first uncached reply after restarting still takes about 27 seconds, and recognition/conversation/network time is additional. Wake acknowledgements remain cached. Android TTS remains the fallback, shown in the app Voice field. Playback waits for the complete WAV. See [voice setup and limitations](VOICE_SETUP.md).
+Phone replies use the local VoxCPM2 Jarvis adapter and supplied reference recording through the authenticated PC speech endpoint. A persistent worker keeps the model in system RAM between replies. Earlier local tests measured 5.2 seconds for a warm short reply and 11.0 seconds for a warm two-sentence reply, down from 27.2 and 34.0 seconds. The first uncached reply after restarting still takes about 27 seconds, and recognition/conversation/network time is additional. Wake acknowledgements remain cached. Phone 0.7 adds sentence-by-sentence playback, interrupted-reply detection, and recovery to wake listening. Android TTS is used only if custom speech fails before playback starts. Diary work yields between smaller cached batches and backs off after failures. See [voice setup and limitations](VOICE_SETUP.md).
 
 
 ## OpenJarvis candidate backend

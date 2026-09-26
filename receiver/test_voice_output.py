@@ -19,6 +19,17 @@ def wav_bytes():
 
 
 class VoiceTests(unittest.TestCase):
+    def test_stream_yields_first_sentence_before_rendering_rest_and_cleans_on_close(self):
+        with patch('voice_output.synthesize',return_value=wav_bytes()) as render:
+            stream=voice_output.synthesize_stream('The workshop is ready. Your appointment is at 3.5 hours from now.',self.root)
+            self.assertEqual(next(stream),wav_bytes())
+            self.assertEqual(render.call_count,1)
+            self.assertEqual(render.call_args.args[0],'The workshop is ready.')
+            self.assertEqual(next(stream),wav_bytes())
+            self.assertIn('3.5',render.call_args.args[0])
+            stream.close()
+            self.assertFalse(list((self.root/'interactive').iterdir()))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

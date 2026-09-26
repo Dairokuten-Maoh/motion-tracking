@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from unittest.mock import Mock, patch
 from datetime import datetime
 from diary import grounded, refresh, fingerprint, snapshot
 from server import Archive, TAIPEI
@@ -10,6 +11,30 @@ from test_server import audio
 
 
 class DiaryTests(unittest.TestCase):
+    def test_failed_snapshot_backs_off_but_changed_input_retries(self):
+        generate=Mock(side_effect=ValueError('Bad quote'))
+        refresh(self.archive,'fake',generate=generate)
+        refresh(self.archive,'fake',generate=generate)
+        self.assertEqual(generate.call_count,1)
+        with self.archive.connect() as db:
+            db.execute("UPDATE recordings SET transcript=transcript || ' corrected' WHERE id=?",(self.clip,))
+        refresh(self.archive,'fake',generate=generate)
+        self.assertEqual(generate.call_count,2)
+
+    def test_deferred_batch_resumes_from_validated_cache_without_error(self):
+        from gpu_slot import BackgroundDeferred
+        empty={'summary':[],'possible_tasks':[],'notable_moments':[]}
+        with self.archive.connect() as db:
+            db.execute('UPDATE recordings SET transcript=? WHERE id=?',('a'*1800,self.clip))
+        with patch('diary.generate_batch',side_effect=[empty,BackgroundDeferred()]):
+            refresh(self.archive,'fake')
+        with self.archive.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM diary_batches').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT count(*) FROM diary_status').fetchone()[0],0)
+        with patch('diary.generate_batch',return_value=empty) as generate:
+            refresh(self.archive,'fake')
+            self.assertEqual(generate.call_count,1)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.archive = Archive(self.temp.name)
